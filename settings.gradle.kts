@@ -14,4 +14,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "CCM Elixir Tracker"
-include ':app'
+include(":app")
