@@ -77,7 +77,6 @@ private fun MainScreen(
 ) {
     var overlayOk by remember { mutableStateOf(onCheckOverlay()) }
     var running by remember { mutableStateOf(false) }
-    var showEvo by remember { mutableStateOf(true) }
 
     Box(
         Modifier
@@ -113,9 +112,7 @@ private fun MainScreen(
                 },
             )
 
-            SettingsCard(showEvo = showEvo, onShowEvoChange = { showEvo = it })
-
-            InfoCard(showEvo)
+            InfoCard()
             Spacer(Modifier.height(12.dp))
         }
     }
@@ -237,41 +234,7 @@ private fun ToggleCard(running: Boolean, ready: Boolean, onToggle: () -> Unit) {
 }
 
 @Composable
-private fun SettingsCard(showEvo: Boolean, onShowEvoChange: (Boolean) -> Unit) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = T.surface),
-        shape = RoundedCornerShape(16.dp),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Text("显示设置", color = T.text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("觉醒卡用觉醒贴图", color = T.text, fontSize = 14.sp)
-                    Text("关闭后统一用普通卡面", color = T.textDim, fontSize = 12.sp)
-                }
-                Switch(
-                    checked = showEvo,
-                    onCheckedChange = onShowEvoChange,
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = T.text,
-                        checkedTrackColor = T.accentSoft,
-                        uncheckedThumbColor = T.textDim,
-                        uncheckedTrackColor = T.surfaceHi,
-                    )
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun InfoCard(showEvo: Boolean) {
+private fun InfoCard() {
     Card(
         colors = CardDefaults.cardColors(containerColor = T.surface),
         shape = RoundedCornerShape(16.dp),

@@ -30,24 +30,33 @@ import kotlinx.coroutines.delay
  * 悬浮窗根布局（全屏透明）。
  *
  *  - 左上：敌方 8 张牌（固定 8 格，未知灰色）
- *  - 中右：圣水（GitHub 贴图）
+ *  - 中右：圣水球 + 开始/暂停/倍率
  *  - 战场：出牌落点预判（卡片 + 准星，0.8s 淡出）
  */
 @Composable
 fun OverlayRoot(
     state: BattlePoller.State?,
     tracker: EnemyTracker?,
+    elixir: ElixirTracker?,
     context: Context,
 ) {
     Box(Modifier.fillMaxSize()) {
-        EnemyDeckPanel(tracker, context, Modifier.align(Alignment.TopStart).padding(start = 6.dp, top = 96.dp))
-
-        ElixirOrb(
-            value = state?.elixir ?: 0,
-            real = state?.elixirReal ?: false,
-            context = context,
-            modifier = Modifier.align(Alignment.CenterEnd).padding(end = 8.dp).offset(y = 30.dp)
+        EnemyDeckPanel(
+            tracker, context,
+            Modifier.align(Alignment.TopStart).padding(start = 6.dp, top = 96.dp)
         )
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 8.dp)
+                .offset(y = 30.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            ElixirOrb(state?.elixir ?: 0, elixir?.running == true, context)
+            ElixirControls(elixir)
+        }
 
         state?.newDeploys?.forEach { ev ->
             key(ev.atMs, ev.cardId, ev.wx, ev.wy) { DeployMarker(ev, context) }
@@ -60,33 +69,42 @@ fun OverlayRoot(
 @Composable
 private fun EnemyDeckPanel(tracker: EnemyTracker?, context: Context, modifier: Modifier = Modifier) {
     if (tracker == null) return
-    val deck = remember(tracker.playCountSnapshot()) { tracker.deck() }
-    val hand = remember(tracker.playCountSnapshot()) { tracker.hand().toSet() }
-    val next = remember(tracker.playCountSnapshot()) { tracker.nextCard() }
+    val snap = tracker.playCountSnapshot()
+    val deck = remember(snap) { tracker.deck() }
+    val handSet = remember(snap) { tracker.hand().toSet() }
+    val next = remember(snap) { tracker.nextCard() }
 
     Column(modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        // 8 个固定槽位：已知的放牌，未知的留灰
         repeat(8) { i ->
             val cardId = deck.getOrNull(i)
-            val isHand = cardId != null && cardId in hand
-            val isNext = cardId != null && cardId == next
-            DeckSlot(cardId = cardId, isHand = isHand, isNext = isNext, context = context, trackerRef = tracker)
+            DeckSlot(
+                cardId = cardId,
+                isHand = cardId != null && cardId in handSet,
+                isNext = cardId != null && cardId == next,
+                context = context,
+                trackerRef = tracker,
+            )
         }
     }
 }
 
 @Composable
-private fun DeckSlot(cardId: Int?, isHand: Boolean, isNext: Boolean, context: Context, trackerRef: EnemyTracker?) {
+private fun DeckSlot(
+    cardId: Int?,
+    isHand: Boolean,
+    isNext: Boolean,
+    context: Context,
+    trackerRef: EnemyTracker?,
+) {
     val w = if (isNext) 30.dp else 36.dp
     val h = w * 1.2f
-
     val evolved = isHand && cardId != null && trackerRef?.showEvolved(cardId) == true
-    val art: ImageBitmap? = remember(cardId, isHand, evolved) {
+
+    val art: ImageBitmap? = remember(cardId, evolved) {
         if (cardId == null) null
         else {
             val c = CardDb.get(cardId)
-            val name = if (evolved) (c?.pngEvo ?: c?.png) else c?.png
-            CardArt.load(context, name, 110)
+            CardArt.load(context, if (evolved) (c?.pngEvo ?: c?.png) else c?.png, 110)
         }
     }
 
@@ -94,13 +112,13 @@ private fun DeckSlot(cardId: Int?, isHand: Boolean, isNext: Boolean, context: Co
         Modifier
             .size(w, h)
             .clip(RoundedCornerShape(4.dp))
-            .background(if (cardId == null) T.surfaceHi.copy(alpha = 0.55f) else T.surface)
+            .background(if (cardId == null) T.surfaceHi.copy(alpha = 0.5f) else T.surface)
             .border(
                 1.dp,
                 when {
-                    isNext -> T.gold.copy(alpha = 0.8f)
+                    isNext -> T.gold.copy(alpha = 0.85f)
                     isHand -> T.border
-                    else -> T.border.copy(alpha = 0.35f)
+                    else -> T.border.copy(alpha = 0.3f)
                 },
                 RoundedCornerShape(4.dp)
             )
@@ -108,41 +126,90 @@ private fun DeckSlot(cardId: Int?, isHand: Boolean, isNext: Boolean, context: Co
         if (art != null) {
             Image(
                 bitmap = art, contentDescription = null,
-                modifier = Modifier.fillMaxSize().alpha(if (isHand) 0.55f else 1f),
+                modifier = Modifier.fillMaxSize().alpha(if (isHand) 1f else 0.45f),
                 contentScale = ContentScale.Crop
             )
         }
     }
 }
 
-/* ---------------- 圣水球 ---------------- */
+/* ---------------- 圣水 ---------------- */
 
 @Composable
-private fun ElixirOrb(value: Int, real: Boolean, context: Context, modifier: Modifier = Modifier) {
-    val bounce by animateFloatAsState(
-        targetValue = if (value >= 10) 1.06f else 1f,
-        animationSpec = spring(dampingRatio = 0.45f, stiffness = 900f), label = "b"
+private fun ElixirOrb(value: Int, running: Boolean, context: Context) {
+    val pop by animateFloatAsState(
+        if (value >= 10) 1.07f else 1f,
+        spring(dampingRatio = 0.45f, stiffness = 900f), label = "pop"
     )
     val icon = remember { CardArt.loadIcon(context, "elixir_icon.png", 160) }
 
-    Box(modifier.scale(bounce), contentAlignment = Alignment.Center) {
-        if (icon != null) {
-            Image(icon, null, Modifier.size(64.dp))
-        } else {
-            Box(Modifier.size(64.dp).clip(RoundedCornerShape(percent = 50)).background(T.elixir))
+    Box(Modifier.scale(pop).alpha(if (running) 1f else 0.55f), contentAlignment = Alignment.Center) {
+        if (icon != null) Image(icon, null, Modifier.size(62.dp))
+        else Box(Modifier.size(62.dp).clip(RoundedCornerShape(percent = 50)).background(T.elixir))
+
+        Text("$value", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Black)
+        Text(
+            if (running) "敌" else "停",
+            color = Color.White.copy(alpha = 0.85f), fontSize = 8.sp,
+            modifier = Modifier.offset(y = 16.dp)
+        )
+    }
+}
+
+@Composable
+private fun ElixirControls(elixir: ElixirTracker?) {
+    if (elixir == null) return
+    var running by remember { mutableStateOf(elixir.running) }
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        // 开始 / 暂停
+        Box(
+            Modifier
+                .size(32.dp)
+                .clip(RoundedCornerShape(percent = 50))
+                .background(if (running) T.red.copy(alpha = 0.86f) else T.green.copy(alpha = 0.9f))
+                .clickable {
+                    if (running) { elixir.pause(); running = false }
+                    else { if (elixir.precise <= 0.0 || !elixir.running) elixir.start(); else elixir.resume(); running = true }
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Canvas(Modifier.size(13.dp)) {
+                if (running) {
+                    drawRect(Color.White, topLeft = Offset(size.width * 0.18f, 0f),
+                        size = androidx.compose.ui.geometry.Size(size.width * 0.26f, size.height))
+                    drawRect(Color.White, topLeft = Offset(size.width * 0.56f, 0f),
+                        size = androidx.compose.ui.geometry.Size(size.width * 0.26f, size.height))
+                } else {
+                    val p = androidx.compose.ui.graphics.Path().apply {
+                        moveTo(size.width * 0.22f, 0f)
+                        lineTo(size.width * 0.85f, size.height / 2)
+                        lineTo(size.width * 0.22f, size.height)
+                        close()
+                    }
+                    drawPath(p, Color.White)
+                }
+            }
         }
-        Text(
-            "$value",
-            color = Color.White,
-            fontSize = 21.sp,
-            fontWeight = FontWeight.Black
-        )
-        Text(
-            if (real) "敌" else "~",
-            color = Color.White.copy(alpha = 0.85f),
-            fontSize = 8.sp,
-            modifier = Modifier.offset(y = 17.dp)
-        )
+
+        // 当前倍率（只读，按官方时间轴自动切）
+        Box(
+            Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .background(T.surface.copy(alpha = 0.9f))
+                .border(1.dp, T.border, RoundedCornerShape(6.dp))
+                .padding(horizontal = 7.dp, vertical = 3.dp)
+        ) {
+            Text(
+                "${elixir.phase.multiplier.toInt()}×",
+                color = when (elixir.phase) {
+                    ElixirTracker.Phase.NORMAL -> T.textDim
+                    ElixirTracker.Phase.DOUBLE -> T.gold
+                    ElixirTracker.Phase.TRIPLE -> T.accent
+                },
+                fontSize = 11.sp, fontWeight = FontWeight.Bold
+            )
+        }
     }
 }
 
@@ -150,7 +217,7 @@ private fun ElixirOrb(value: Int, real: Boolean, context: Context, modifier: Mod
 
 @Composable
 private fun DeployMarker(ev: DeployEvent, context: Context) {
-    var phase by remember { mutableStateOf(0) }   // 0=进场 1=显示 2=淡出 3=结束
+    var phase by remember { mutableStateOf(0) }
     if (phase == 3) return
 
     LaunchedEffect(ev.atMs) {
@@ -214,7 +281,6 @@ private fun Crosshair(modifier: Modifier = Modifier) {
     }
 }
 
-/** 世界坐标 → 屏幕 dp（1280x2772 基准，密度折算 0.38） */
 private fun worldToScreen(wx: Int, wy: Int): Pair<Float, Float> {
     val px = 667f + (wx - 9000f) * 0.076f
     val py = 453f + (wy - 3000f) * 0.0609f

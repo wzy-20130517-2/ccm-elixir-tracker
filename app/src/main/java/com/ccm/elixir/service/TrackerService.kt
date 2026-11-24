@@ -30,7 +30,7 @@ class TrackerService : Service() {
 
         if (overlay == null) {
             overlay = OverlayHost(applicationContext).also {
-                it.bindTracker(poller.tracker)
+                it.bindTrackers(poller.tracker, poller.elixir)
                 it.show()
             }
         }

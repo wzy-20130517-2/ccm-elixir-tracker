@@ -3,56 +3,109 @@ package com.ccm.elixir.data
 import kotlin.math.min
 
 /**
- * 我方圣水值。
+ * 敌方圣水估算。
  *
- * 地址只在开局几秒内有效（出牌后对象重建），所以有两套来源：
- *  1. 真实地址读到 [0,10] → 直接用
- *  2. 读不到 → 沿用上一次真值，按 2.8s/+1 外推（封顶 10）
+ * 敌方圣水不在内存里（服务端不下发对手圣水），只能推。
+ *
+ * 倍率时间轴（Supercell 官方规则）：
+ *   第 1 分钟   1×
+ *   第 2 分钟   1×
+ *   第 3 分钟   2×
+ *   加时第 4 分钟 2×
+ *   加时第 5 分钟 3×
+ * 常规 3 分钟分出胜负就直接结束，加时未必发生 —— 所以自动推演之外
+ * 保留手动切倍率兜底。
  */
 class ElixirTracker {
 
-    private var addr: Long = 0
-    private var lastGood: Int = 5
-    private var anchorMs: Long = 0
+    private var value: Double = 5.0
+    private var lastTickMs: Long = 0
+    private var startedAtMs: Long = 0
 
-    /** 双倍圣水期（最后 60 秒） */
-    var multiplier: Double = 1.0
-        set(value) { field = value; anchorMs = System.currentTimeMillis() }
+    /** 是否在计时（暂停则冻结） */
+    var running: Boolean = false
+        private set
 
-    fun setAddress(a: Long) { addr = a }
+    /** 这一局是否已经点过开始 */
+    var hasStarted: Boolean = false
+        private set
 
-    fun hasAddress(): Boolean = addr != 0L
+    /** 当前倍率 */
+    var phase: Phase = Phase.NORMAL
+        private set
 
-    fun address(): Long = addr
-
-    /** 开局先给个估算值，让 UI 有东西显示 */
-    fun primeGuess(v: Int) {
-        lastGood = v.coerceIn(0, 10)
-        anchorMs = System.currentTimeMillis()
+    enum class Phase(val multiplier: Double) {
+        NORMAL(1.0),
+        DOUBLE(2.0),
+        TRIPLE(3.0),
     }
 
-    /**
-     * 根据当前读到的原始值更新，返回显示用的值。
-     * @param raw 从 addr 读到的值，读失败传 null
-     */
-    fun update(raw: Int?): Int {
-        val now = System.currentTimeMillis()
-        if (raw != null && raw in 0..10) {
-            lastGood = raw
-            anchorMs = now
-            return raw
+    val display: Int get() = min(10, value.toInt())
+
+    val precise: Double get() = value
+
+    /** 已过去的秒数 */
+    val elapsedSec: Int
+        get() = if (startedAtMs == 0L) 0 else ((System.currentTimeMillis() - startedAtMs) / 1000).toInt()
+
+    /** 点「开始」：以 5 点为起点重新计时 */
+    fun start() {
+        value = 5.0
+        phase = Phase.NORMAL
+        startedAtMs = System.currentTimeMillis()
+        lastTickMs = startedAtMs
+        running = true
+        hasStarted = true
+    }
+
+    fun pause() {
+        settle()
+        running = false
+    }
+
+    fun resume() {
+        lastTickMs = System.currentTimeMillis()
+        running = true
+    }
+
+    fun stop() {
+        running = false
+        value = 5.0
+        phase = Phase.NORMAL
+        startedAtMs = 0
+        lastTickMs = 0
+        hasStarted = false
+    }
+
+    /** 敌方出了一张牌 */
+    fun onEnemyPlay(cost: Int, nowMs: Long = System.currentTimeMillis()) {
+        if (!running) return
+        settle(nowMs)
+        value = (value - cost).coerceAtLeast(0.0)
+    }
+
+    /** 按官方时间轴推倍率 */
+    private fun autoPhase(sec: Int): Phase = when {
+        sec < 120 -> Phase.NORMAL       // 第 1、2 分钟
+        sec < 240 -> Phase.DOUBLE       // 第 3 分钟 + 加时第 4 分钟
+        else -> Phase.TRIPLE            // 加时第 5 分钟
+    }
+
+    private fun settle(nowMs: Long = System.currentTimeMillis()) {
+        if (!running || lastTickMs == 0L) {
+            lastTickMs = nowMs
+            return
         }
-        // 外推
-        val periodMs = (2800 / multiplier).toLong().coerceAtLeast(1000)
-        val elapsed = now - anchorMs
-        val gained = (elapsed / periodMs).toInt()
-        return min(10, lastGood + gained)
+        val auto = autoPhase(elapsedSec)
+        if (auto != phase) phase = auto
+        val dt = (nowMs - lastTickMs).coerceAtLeast(0)
+        val perPoint = 2800.0 / phase.multiplier
+        value = min(10.0, value + dt / perPoint)
+        lastTickMs = nowMs
     }
 
-    fun reset() {
-        addr = 0
-        lastGood = 5
-        anchorMs = System.currentTimeMillis()
-        multiplier = 1.0
+    fun poll(): Int {
+        settle()
+        return display
     }
 }
