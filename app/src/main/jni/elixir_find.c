@@ -1,14 +1,16 @@
 /*
- * elixir_find —— 定位我方圣水数值的地址。
+ * elixir_find —— 定位双方圣水地址。
  *
- * 圣水每 2.8 秒 +1（满 10 停），出牌时 -3/-4，范围 [0,10]。
- * 用「多轮采样 + 轨迹收敛」筛：
- *   1. 全扫 [0,10] 的 int32
- *   2. 等 2.8s 重采，只留「增量 0..1」且仍 <=10 的
- *   3. 重复 4 轮
- *   4. 输出所有活下来的地址 + 当前值
+ * 圣水特征：每 2.8s +1，范围 [0,10]，出牌时 -N。
+ * 敌方和我方是两个独立的计数器，都在涨，所以单靠"每 2.8s +1"分不开。
  *
- * 输出：每个地址一行 "<addr> <value>"
+ * 区分办法：**出牌时只有一个会掉**。
+ *   mode=find    只筛候选，输出所有地址 + 当前值
+ *   mode=watch   持续监控给定地址，打印变化（用于出牌时观察哪个掉了）
+ *
+ * usage:
+ *   elixir_find <pid> find [rounds]
+ *   elixir_find <pid> watch <addr1> <addr2> ... [seconds]
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -20,18 +22,14 @@
 
 static pid_t TARGET;
 
-static ssize_t rdm(uint64_t addr, void *buf, size_t n) {
-    struct iovec l = {buf, n};
-    struct iovec r = {(void *) (uintptr_t) addr, n};
-    return process_vm_readv(TARGET, &l, 1, &r, 1, 0);
+static int rd_i32(uint64_t addr, int32_t *out) {
+    struct iovec l = {out, 4};
+    struct iovec r = {(void *) (uintptr_t) addr, 4};
+    return process_vm_readv(TARGET, &l, 1, &r, 1, 0) == 4 ? 0 : -1;
 }
 
-typedef struct {
-    uint64_t addr;
-    int32_t prev;
-} Cand;
-
-#define MAX_CAND 2000000
+typedef struct { uint64_t addr; int32_t prev; } Cand;
+#define MAX_CAND 3000000
 static Cand *cand = NULL;
 static size_t ncand = 0, cap = 0;
 
@@ -47,11 +45,10 @@ static void cand_push(uint64_t a, int32_t v) {
     ncand++;
 }
 
-/** 全量扫描一遍，把 [1,10] 的 int32 收进来 */
 static void scan_all(void) {
-    char maps_path[64];
-    snprintf(maps_path, sizeof(maps_path), "/proc/%d/maps", TARGET);
-    FILE *mf = fopen(maps_path, "r");
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/maps", TARGET);
+    FILE *mf = fopen(path, "r");
     if (!mf) return;
 
     const size_t CH = 32 * 1024 * 1024;
@@ -76,6 +73,7 @@ static void scan_all(void) {
             for (ssize_t i = 0; i + 4 <= got; i += 4) {
                 int32_t v;
                 memcpy(&v, buf + i, 4);
+                /* 圣水可能是整数，也可能存成 0..10 的定点数；这里先按整数收 */
                 if (v >= 1 && v <= 10) cand_push(p + i, v);
             }
             if ((size_t) got < w) break;
@@ -85,12 +83,12 @@ static void scan_all(void) {
     free(buf);
 }
 
-/** 一轮过滤：值仍在 [0,10]，且增量在 [0,1]（不可能是别人的资源在涨） */
+/** 一轮：值仍 [0,10]，且增量 0..1（圣水只涨不跳） */
 static void filter_round(void) {
     size_t j = 0;
     for (size_t i = 0; i < ncand; i++) {
-        int32_t v = 0;
-        if (rdm(cand[i].addr, &v, 4) != 4) continue;
+        int32_t v;
+        if (rd_i32(cand[i].addr, &v) < 0) continue;
         if (v < 0 || v > 10) continue;
         int d = v - cand[i].prev;
         if (d < 0 || d > 1) continue;
@@ -101,30 +99,63 @@ static void filter_round(void) {
     ncand = j;
 }
 
-int main(int argc, char **argv) {
-    if (argc < 2) {
-        fprintf(stderr, "usage: %s <pid> [rounds]\n", argv[0]);
-        return 2;
-    }
-    TARGET = (pid_t) atoi(argv[1]);
-    int rounds = argc > 2 ? atoi(argv[2]) : 4;
-    if (rounds < 1) rounds = 4;
-
+static int mode_find(int rounds) {
     scan_all();
     fprintf(stderr, "初筛 %zu\n", ncand);
-
     for (int r = 0; r < rounds && ncand > 0; r++) {
         usleep(2800 * 1000);
         filter_round();
         fprintf(stderr, "第 %d 轮后 %zu\n", r + 1, ncand);
-        if (ncand > 4096) {
-            /* 候选太多，多等一轮无意义，继续筛 */
+    }
+    for (size_t i = 0; i < ncand; i++)
+        printf("%llu %d\n", (unsigned long long) cand[i].addr, cand[i].prev);
+    return 0;
+}
+
+static int mode_watch(int argc, char **argv, int from) {
+    int n = argc - from;
+    if (n <= 0 || n > 16) {
+        fprintf(stderr, "watch 需要 1..16 个地址\n");
+        return 2;
+    }
+    uint64_t addrs[16];
+    int32_t last[16];
+    for (int i = 0; i < n; i++) {
+        addrs[i] = strtoull(argv[from + i], NULL, 0);
+        if (rd_i32(addrs[i], &last[i]) < 0) last[i] = -1;
+    }
+    fprintf(stderr, "监控 %d 个地址，出牌时观察哪个掉了\n", n);
+    for (int tick = 0; tick < 300; tick++) {
+        usleep(100 * 1000);
+        for (int i = 0; i < n; i++) {
+            int32_t v;
+            if (rd_i32(addrs[i], &v) < 0) continue;
+            if (v != last[i]) {
+                printf("%d %llu %d %d\n", tick, (unsigned long long) addrs[i], last[i], v);
+                fflush(stdout);
+                last[i] = v;
+            }
         }
     }
-
-    for (size_t i = 0; i < ncand; i++) {
-        printf("%llu %d\n", (unsigned long long) cand[i].addr, cand[i].prev);
-    }
-    free(cand);
     return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc < 3) {
+        fprintf(stderr,
+                "usage:\n  %s <pid> find [rounds]\n  %s <pid> watch <addr...> \n",
+                argv[0], argv[0]);
+        return 2;
+    }
+    TARGET = (pid_t) atoi(argv[1]);
+    const char *mode = argv[2];
+
+    if (strcmp(mode, "find") == 0) {
+        int rounds = argc > 3 ? atoi(argv[3]) : 3;
+        return mode_find(rounds < 1 ? 3 : rounds);
+    }
+    if (strcmp(mode, "watch") == 0) return mode_watch(argc, argv, 3);
+
+    fprintf(stderr, "未知模式: %s\n", mode);
+    return 2;
 }

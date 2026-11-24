@@ -41,5 +41,22 @@ object CardArt {
         }.getOrNull()
     }
 
+    /** 加载 assets 根目录下的独立图标（如圣水球） */
+    fun loadIcon(ctx: Context, name: String, reqW: Int): ImageBitmap? {
+        val key = "icon:$name@$reqW"
+        cache[key]?.let { return it }
+        return runCatching {
+            val o1 = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            ctx.assets.open(name).use { BitmapFactory.decodeStream(it, null, o1) }
+            val scale = (o1.outWidth / reqW.coerceAtLeast(1)).coerceAtLeast(1)
+            val o2 = BitmapFactory.Options().apply {
+                inSampleSize = scale
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            val bmp = ctx.assets.open(name).use { BitmapFactory.decodeStream(it, null, o2) } ?: return null
+            bmp.asImageBitmap().also { cache[key] = it }
+        }.getOrNull()
+    }
+
     fun clear() = cache.clear()
 }

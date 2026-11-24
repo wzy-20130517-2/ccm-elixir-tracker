@@ -18,6 +18,7 @@ import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.ccm.elixir.data.BattlePoller
+import com.ccm.elixir.data.EnemyTracker
 import com.ccm.elixir.ui.OverlayRoot
 
 /**
@@ -41,6 +42,9 @@ class OverlayHost(private val ctx: Context) : LifecycleOwner, ViewModelStoreOwne
     private var params: WindowManager.LayoutParams? = null
 
     private val stateHolder = mutableStateOf<BattlePoller.State?>(null)
+    private var tracker: EnemyTracker? = null
+
+    fun bindTracker(t: EnemyTracker) { tracker = t }
 
     fun onState(s: BattlePoller.State) {
         stateHolder.value = s
@@ -58,7 +62,7 @@ class OverlayHost(private val ctx: Context) : LifecycleOwner, ViewModelStoreOwne
             setViewTreeSavedStateRegistryOwner(this@OverlayHost)
             setContent {
                 val st by stateHolder
-                OverlayRoot(state = st, context = ctx)
+                OverlayRoot(state = st, tracker = tracker, context = ctx)
             }
         }
 

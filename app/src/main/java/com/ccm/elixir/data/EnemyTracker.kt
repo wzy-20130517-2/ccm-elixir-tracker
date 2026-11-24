@@ -29,44 +29,44 @@ data class DeployEvent(
 /**
  * 敌方牌面追踪。
  *
- * 规则：
- *  - 敌方每次「新出现」一个单位，视为出了一张该牌
- *  - 同一张牌重复出现不重复记（已经知道这张牌在手里）
- *  - 8 张牌里已知的显示为彩色，未知的显示为灰色占位
+ * 核心模型（8 张牌循环）：
+ *   敌方卡组固定 8 张，手牌 4 张，出 1 张补 1 张。
+ *   所以：**出过的牌按顺序排，最近 4 张不在手里，第 5 张（倒数第 4 张）= 下一张。**
+ *
+ *   hand = deck 里不在 played[-4:] 的那些
+ *   next = played[-4]（出满 4 张后才有）
  *
  * 觉醒轮数：
- *  - 一张牌第 1、2 次出是普通；第 3 次起是觉醒（一轮觉醒）
- *  - 二轮觉醒的牌：第 1 次普通，第 2 次觉醒，第 3 次普通，第 4 次觉醒…
- *  - 精英卡（super-*）整场都按精英样式显示
+ *   一轮觉醒的牌 —— 第 1 次普通，第 2 次觉醒，第 3 次普通…
+ * 精英卡：
+ *   整场保持精英外观
  */
 class EnemyTracker {
 
-    /** 敌方已确认的牌（cardId 集合，按发现顺序） */
-    private val known = LinkedHashSet<Int>()
+    /** 敌方出过的牌，按时间顺序（可以有重复） */
+    private val played = mutableListOf<Int>()
 
-    /** cardId -> 已经出过几次（用于算觉醒轮次） */
+    /** 有足够证据确认属于敌方卡组的牌 */
+    private val confirmed = LinkedHashSet<Int>()
+
+    /** cardId -> 出过几次（算觉醒轮次） */
     private val playCount = HashMap<Int, Int>()
 
-    /** 上一帧仍然在场的 gid，用来判断「新出现」 */
     private var lastAliveGids = emptySet<Int>()
 
-    /** 上一帧的塔 gid 血量，用来检测塔被拆 */
-    private var lastTowerHp = HashMap<Int, Int>()
-
-    val deployed = mutableListOf<DeployEvent>()
+    /** 本局全部出牌记录（给浮层用） */
+    val deployLog = mutableListOf<DeployEvent>()
 
     fun reset() {
-        known.clear()
+        played.clear()
+        confirmed.clear()
         playCount.clear()
         lastAliveGids = emptySet()
-        lastTowerHp = HashMap()
-        deployed.clear()
+        deployLog.clear()
     }
 
     /**
-     * 喂一帧实体数据。
-     *
-     * @return 本帧新发现的出牌（可能多张）
+     * 喂一帧实体数据，返回本帧新发现的出牌。
      */
     fun onFrame(entities: List<Entity>, nowMs: Long): List<DeployEvent> {
         val enemyUnits = entities.filter { it.own == 0 && !it.isTower }
@@ -76,63 +76,59 @@ class EnemyTracker {
         val events = fresh.map { e ->
             val n = (playCount[e.cardId] ?: 0) + 1
             playCount[e.cardId] = n
-            known.add(e.cardId)
+            confirmed.add(e.cardId)
+            played.add(e.cardId)
             DeployEvent(
                 cardId = e.cardId, wx = e.x, wy = e.y, atMs = nowMs,
                 evolved = isEvolvedOnPlay(e.cardId, n),
             )
         }
 
-        // 塔血量下降也记一笔（不算出牌，但可用于校验）
-        entities.filter { it.isTower && it.own == 0 }.forEach { t ->
-            val prev = lastTowerHp[t.gid]
-            if (prev != null && t.cur < prev) { /* 塔被打了 */ }
-            lastTowerHp[t.gid] = t.cur
-        }
-
         lastAliveGids = aliveNow
-        if (events.isNotEmpty()) deployed.addAll(events)
+        if (events.isNotEmpty()) {
+            deployLog.addAll(events)
+            if (deployLog.size > 200) deployLog.subList(0, deployLog.size - 200).clear()
+        }
         return events
     }
 
-    /** 该 cardId 已确认在敌方手里 */
-    fun isKnown(cardId: Int): Boolean = cardId in known
+    /** 敌方已知的卡组（按出现次数降序，最多 8 张） */
+    fun deck(): List<Int> {
+        val order = played.distinct()
+        return order.sortedByDescending { c -> played.count { it == c } }.take(8)
+    }
 
-    /** 已确认的牌列表（按发现顺序） */
-    fun knownCards(): List<Int> = known.toList()
+    /** 敌方手牌 = 卡组里不在最近 4 张出牌中的 */
+    fun hand(): List<Int> {
+        val recent = played.takeLast(4).toSet()
+        return deck().filter { it !in recent }
+    }
 
-    /** 该牌出过几次 */
+    /** 下一张要回到手里的牌 = 倒数第 4 张出的 */
+    fun nextCard(): Int? = if (played.size >= 4) played[played.size - 4] else null
+
     fun playCountOf(cardId: Int): Int = playCount[cardId] ?: 0
 
-    /**
-     * 下一次出这张牌时，是不是觉醒形态。
-     * 精英卡永远走精英样式，不参与觉醒判定。
-     */
+    fun isKnown(cardId: Int): Boolean = cardId in confirmed
+
+    /** 给 Compose 做 remember 的 key：出牌数变化就重算 */
+    fun playCountSnapshot(): Int = played.size
+
+    /** 某张牌当前该用觉醒图吗（按已出次数推下一次） */
+    fun showEvolved(cardId: Int): Boolean {
+        val n = playCountOf(cardId)
+        return if (n == 0) false else isEvolvedOnPlay(cardId, n)
+    }
+
+    /** 下一次出这张牌是不是觉醒形态 */
     fun isNextEvolved(cardId: Int): Boolean = isEvolvedOnPlay(cardId, playCountOf(cardId) + 1)
 
-    companion object {
-        /**
-         * 觉醒周期（每几次出牌循环一次）。0 表示该卡没有觉醒。
-         */
-        fun evoCycle(cardId: Int): Int {
-            val card = CardDb.get(cardId) ?: return 0
-            if (card.pngEvo == null) return 0
-            // 一轮觉醒：第 1 次普通，第 2 次觉醒
-            return 1
-        }
-
-        /**
-         * 第 n 次出这张牌时是否觉醒。
-         *
-         * 一轮觉醒：周期 2 —— 1 普通，2 觉醒，3 普通，4 觉醒…
-         * 二轮觉醒：周期 3 —— 1 普通，2 普通，3 觉醒…（少数卡）
-         */
-        fun isEvolvedOnPlay(cardId: Int, n: Int): Boolean {
-            if (n < 1) return false
-            return when (evoCycle(cardId)) {
-                0 -> false
-                else -> n % 2 == 0
-            }
-        }
+    /** 第 n 次出这张牌是否为觉醒 */
+    fun isEvolvedOnPlay(cardId: Int, n: Int): Boolean {
+        if (n < 1) return false
+        val card = CardDb.get(cardId) ?: return false
+        if (card.pngEvo == null) return false
+        // 一轮觉醒：第 1 次普通，第 2 次觉醒
+        return n % 2 == 0
     }
 }

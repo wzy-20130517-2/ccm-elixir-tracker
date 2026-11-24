@@ -29,7 +29,10 @@ class TrackerService : Service() {
         startForegroundCompat()
 
         if (overlay == null) {
-            overlay = OverlayHost(applicationContext).also { it.show() }
+            overlay = OverlayHost(applicationContext).also {
+                it.bindTracker(poller.tracker)
+                it.show()
+            }
         }
         poller.resetBattle()
         poller.start(scope)
