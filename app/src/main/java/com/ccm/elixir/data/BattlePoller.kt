@@ -95,7 +95,7 @@ class BattlePoller(
             State(
                 ok = true, pid = pid, elixir = elixir.poll(), elixirRunning = elixir.running,
                 entities = entities, newDeploys = events,
-                enemyKnown = tracker.knownCards(), inBattle = inBattle,
+                enemyKnown = tracker.deck(), inBattle = inBattle,
             )
         )
     }
