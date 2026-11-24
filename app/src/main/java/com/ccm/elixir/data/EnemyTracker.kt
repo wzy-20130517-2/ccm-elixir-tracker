@@ -23,7 +23,6 @@ data class DeployEvent(
     val wx: Int,
     val wy: Int,
     val atMs: Long,
-    val evolved: Boolean,
 )
 
 /**
@@ -78,10 +77,7 @@ class EnemyTracker {
             playCount[e.cardId] = n
             confirmed.add(e.cardId)
             played.add(e.cardId)
-            DeployEvent(
-                cardId = e.cardId, wx = e.x, wy = e.y, atMs = nowMs,
-                evolved = isEvolvedOnPlay(e.cardId, n),
-            )
+            DeployEvent(cardId = e.cardId, wx = e.x, wy = e.y, atMs = nowMs)
         }
 
         lastAliveGids = aliveNow
@@ -113,22 +109,4 @@ class EnemyTracker {
 
     /** 给 Compose 做 remember 的 key：出牌数变化就重算 */
     fun playCountSnapshot(): Int = played.size
-
-    /** 某张牌当前该用觉醒图吗（按已出次数推下一次） */
-    fun showEvolved(cardId: Int): Boolean {
-        val n = playCountOf(cardId)
-        return if (n == 0) false else isEvolvedOnPlay(cardId, n)
-    }
-
-    /** 下一次出这张牌是不是觉醒形态 */
-    fun isNextEvolved(cardId: Int): Boolean = isEvolvedOnPlay(cardId, playCountOf(cardId) + 1)
-
-    /** 第 n 次出这张牌是否为觉醒 */
-    fun isEvolvedOnPlay(cardId: Int, n: Int): Boolean {
-        if (n < 1) return false
-        val card = CardDb.get(cardId) ?: return false
-        if (card.pngEvo == null) return false
-        // 一轮觉醒：第 1 次普通，第 2 次觉醒
-        return n % 2 == 0
-    }
 }
